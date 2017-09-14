@@ -1,0 +1,7 @@
+This is a placeholder for the development of an Opensource replacement code for HobbyKing ESC speed controllers. 
+
+This section will be for the development of brushless code. This is not currently under development however if anyone is interested please feel free to contribute.
+
+Steven Martin (17/4/10)
+
+

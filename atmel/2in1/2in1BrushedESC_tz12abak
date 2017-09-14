@@ -1,0 +1,383 @@
+/* Brushed project
+2 motors off one ESC code file. 
+*/
+
+#include <avr/io.h>
+#include <avr/pgmspace.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <util/delay.h>
+#include <avr/interrupt.h>
+#include <math.h>
+
+//Set your controller here
+#include "tz12a.h"
+
+#define unitialised  0
+#define forward  1
+#define backward  2
+#define brake  3
+#define spinLeft 4
+#define spinRight 5
+
+
+
+extern uint8_t  state = 0;
+extern uint16_t prevTime = 0;
+extern uint16_t prevTime1 = 0;
+extern uint8_t  time0 = 0;
+extern uint16_t timeCH1 = 0;
+extern uint16_t timeCH2 = 0;
+extern uint8_t  failsafe = 0;
+extern uint8_t  failsafe1 = 0;
+extern uint8_t  timeout = 50;
+extern uint8_t  lets_get_high = 0;
+
+#define LOW_PORT_A LOW_A_PORT
+#define LOW_PORT_B LOW_B_PORT 
+#define LOW_PORT_C LOW_C_PORT
+
+#define HIGH_PORT_A HIGH_A_PORT 
+#define HIGH_PORT_B HIGH_B_PORT 
+#define HIGH_PORT_C HIGH_C_PORT
+
+//Motor State Functions
+
+void goForwards(){
+    if (state != forward){
+        cli();
+        //Clear unused pins
+        LOW_PORT_A &= ~(1 << LOW_A);
+        HIGH_PORT_B |= (1 << HIGH_B);
+	    LOW_PORT_C &= ~(1 << LOW_C);
+
+        _delay_us(200); //Fet switch delay
+        LOW_PORT_B |= (1 << LOW_B); //Enable Common pin
+	
+	    _delay_us(200); //Fet switch delay
+	    HIGH_PORT_A &= ~(1<< HIGH_A); //Enable one motor
+	
+	//Both motors are enabled at slightly different times
+	//to hopefully be a little bit nicer to the fets
+	//200us should have no noticible effect on driving straight
+        _delay_us(200); //Fet switch delay
+        HIGH_PORT_C &= ~(1 << HIGH_C); //Enable 2nd motor
+
+        state = forward; //Up
+        sei();
+    }
+}
+
+
+void braking(){
+    if (state != brake){
+        cli();
+        //Clear unused pins
+        HIGH_PORT_A |= (1 << HIGH_A);
+        HIGH_PORT_B |= (1 << HIGH_B);
+	    HIGH_PORT_C |= (1 << HIGH_C);
+
+        _delay_us(200); //Fet switch delay
+        LOW_PORT_A |= (1 << LOW_A);
+        LOW_PORT_B |= (1 << LOW_B);
+	    LOW_PORT_C |= (1 << LOW_C);
+
+        state = brake;
+        _delay_ms(10);
+        sei();
+    }
+}
+
+
+
+void goBackwards(){
+    if (state != backward){
+        cli();
+
+        //Clear unused pins
+        HIGH_PORT_A |= (1 << HIGH_A);
+        LOW_PORT_B &= ~(1 << LOW_B);
+	HIGH_PORT_C |= (1 << HIGH_C);
+
+        _delay_us(200); //Fet switch delay
+        HIGH_PORT_B &= ~(1 << HIGH_B); //Enable Common pin
+	
+	_delay_us(200); //Fet switch delay
+	LOW_PORT_A |= (1<< LOW_A); //Enable one motor
+	
+	//Both motors are enabled at slightly different times
+	//to hopefully be a little bit nicer to the fets
+	//200us should have no noticible effect on driving straight
+        _delay_us(200); //Fet switch delay
+        LOW_PORT_C |= (1 << LOW_C); //Enable 2nd motor
+	
+        state = backward;
+        sei();
+    }
+}
+
+void goSpinLeft(){
+    if (state != spinLeft){
+        cli();
+
+        //Clear unused pins
+        HIGH_PORT_A |= (1 << HIGH_A);
+        LOW_PORT_B &= ~(1 << LOW_B);
+	HIGH_PORT_B |= (1 << HIGH_B);
+	LOW_PORT_C &= ~(1 << LOW_C);
+
+        _delay_us(200); //Fet switch delay
+        LOW_PORT_A |= (1 << LOW_A); //Enable Common pin
+	
+	_delay_us(200); //Fet switch delay
+	HIGH_PORT_C &= ~(1<< HIGH_C); //Enable one motor
+	
+        state = spinLeft;
+        sei();
+    }
+}
+
+void goSpinRight(){
+    if (state != spinRight){
+        cli();
+
+        //Clear unused pins
+        LOW_PORT_A &= ~(1 << LOW_A);
+        LOW_PORT_B &= ~(1 << LOW_B);
+	HIGH_PORT_B |= (1 << HIGH_B);
+	HIGH_PORT_C |= (1 << HIGH_C);
+
+        _delay_us(200); //Fet switch delay
+        HIGH_PORT_A &= ~(1 << HIGH_A); //Enable Common pin
+	
+	_delay_us(200); //Fet switch delay
+	LOW_PORT_C |= (1<< LOW_C); //Enable one motor
+	
+        state = spinRight;
+        sei();
+    }
+}
+
+
+int main(){
+    //Initialisation
+ 
+    //Setup Outputs
+    _delay_ms(10);
+    SET_HIGH_A_PORT |= (1 << HIGH_A);
+    SET_HIGH_B_PORT |= (1 << HIGH_B);
+    SET_HIGH_C_PORT |= (1 << HIGH_C);
+
+    SET_LOW_A_PORT |= (1 << LOW_A);
+    SET_LOW_B_PORT |= (1 << LOW_B);
+    SET_LOW_C_PORT |= (1 << LOW_C);
+    _delay_ms(100);
+
+    HIGH_A_PORT |= (1 << HIGH_A);
+    HIGH_B_PORT |= (1 << HIGH_B);
+    HIGH_C_PORT |= (1 << HIGH_C);
+
+    PORTD |= (1 << PD3);
+
+    //Setup Timer
+    TCCR0 = 0b00000011;  //Setup Timer 0 - scaling of ???? (go check the datasheet and fill it in)
+    TIMSK = (1 << TOIE0)|(1<<OCIE2)|(1<<TOIE2); //Enable Timer0 Overflow interrupt, Timer2 Output Compare and Timer2 Overflow interrupt
+
+    //Setup PWM Timer
+    OCR2 = 0xFF;  //Set the compare value to 0 or off
+    TCCR2 = (1<<CS21); //Set the timer 2 scaling of (go check the datasheet and fill it in)
+
+    //Enable RC Interrupt
+    MCUCR |= (1 << ISC00);  //Set INT0 to trigger on both edges
+    GICR |= (1 << INT0)|(1 << INT1);    //Enable INT0 & INT1
+    _delay_ms(100);
+    sei(); 
+    //End initialisation 
+
+//    goForwards();
+    _delay_ms(200);   
+    _delay_ms(200);
+    //Main loop
+    //Here we manage what mode we are in everything else is done in interrupts
+    while(1){ 
+        //We have check times.
+	    //if(1){*/
+        if(failsafe > 10 && failsafe1 > 10 && timeout > 0){
+    	    uint8_t deadzone = 10;
+    	    uint8_t buffer = 10;
+    	    uint8_t maxOut = 10;
+    	    
+	        //Need to handle states here 
+            if ( abs(timeCH1 - RC_MID) > abs(timeCH2 - RC_MID) ){
+                goForwards();
+
+                /*if (1){
+                if (1){
+                    //if (timeCH1 > (RC_HIGH-maxOut)){
+                    if(1){
+                        OCR2 = 255;
+                        
+                        goForwards();
+                    }else {
+                        OCR2 = (timeCH1 - RC_MID-deadzone)*256/(RC_HIGH-RC_MID-deadzone);
+           
+                        /*if (forwardNorm > 0){
+                             newState = forward;
+                        } 
+                        else {
+                             newState = backward;
+                        }/
+                    }
+                }
+                else {
+                   newState = brake;
+                } */
+            }
+            else {
+                //Spinning Mode
+                if (abs(timeCH2 - RC_MID) > deadzone){
+                    if (timeCH2 > (RC_HIGH-maxOut) || timeCH2 < (RC_LOW+maxOut)){
+                          OCR2 = 255;
+                    }else {
+                          OCR2 = abs(timeCH2 - RC_MID-deadzone)*256/(RC_HIGH-RC_MID-deadzone);
+                    }
+                    if (timeCH2 - RC_MID){
+                        goSpinRight();
+                    }
+                    else {
+                        goSpinRight();
+                    }
+                }
+                else {
+                   newState = brake;
+                }
+            }
+         }
+         else {
+            braking();
+         }       
+        _delay_ms(1); //Limit the rate this runs at 1000Hz should be enough maybe
+    }     
+}
+
+//This interrupt manages failsafe and time0 for upper half of RC timer (lower half is TCNT0) 
+ISR(TIMER0_OVF_vect){
+    //Check failsafe
+    if (timeout > 0){  //If we are out of counts go to braking mode
+        timeout--;      //otherwise decrease failsafe counter
+    }
+    time0++; //time0 is upper bit for RC timer. 
+}
+
+//This interrupt manages RC pulses
+ISR(INT0_vect){
+    //Read in the current time
+    uint16_t time = TCNT0; //Read lower
+    time = time + time0*256;  //Add upper
+
+    //Read in current time
+    if(RC_PORT & ( 1 << RC_PIN)){ //If the pin is high (then its just switched on)
+        prevTime = time;          //then save the current time
+    }
+    else {
+        uint16_t time_diff = time - prevTime;        
+
+        //Update PWM and direction
+        uint8_t buffer = 20;
+
+        if ((time_diff > RC_LOW-buffer) && (time_diff < RC_HIGH+buffer)){  //Check for valid pulse
+            if (failsafe > 10){   //Need 10 good pulses before we start
+                failsafe = 15;    //Set valid pulse counter (15-10 = 5) therfore we can receive 5 bad pulses before we stop
+                timeout = 200;     //Set timeout counter
+
+                //Vaild signal
+		        timeCH1 = time_diff;
+                //newState =backward;
+            } else {
+                failsafe++;  //If havent got 10 valid pulses yet increase count and keep waiting
+                
+            }
+        } else {  //If there is an invalid pulse
+            //Failsafe
+            failsafe--;  //decrease counter           
+        }
+        GICR &= ~(1 << INT0);   //Disable INT0
+        GICR |= (1 << INT1);    //Enable  INT1
+    }
+    
+}
+
+
+ISR(INT1_vect){
+    //Read in the current time
+    uint16_t time = TCNT0; //Read lower
+    time = time + time0*256;  //Add upper
+
+    //Read in current time
+    if(RC_PORT & ( 1 << PD3)){ //If the pin is high (then its just switched on)
+        prevTime1 = time;          //then save the current time
+    }
+    else {
+        uint16_t time_diff = time - prevTime1;        
+
+        //Update PWM and direction
+        uint8_t buffer = 10;
+
+        if ((time_diff > RC_LOW-buffer) && (time_diff < RC_HIGH+buffer)){  //Check for valid pulse
+            if (failsafe1 > 10){   //Need 10 good pulses before we start
+                failsafe1 = 15;    //Set valid pulse counter (15-10 = 5) therfore we can receive 5 bad pulses before we stop
+                timeout = 200;     //Set timeout counter
+
+                //Vaild signal
+                timeCH2 = time;
+            } else {
+                failsafe1++;  //If havent got 10 valid pulses yet increase count and keep waiting
+            } 
+        } else {  //If there is an invalid pulse
+            //Failsafe
+            failsafe1--;  //decrease counter
+        }
+        GICR &= ~(1 << INT1);   //Disable INT1
+        GICR |= (1 << INT0);    //Enable  INT0
+    }
+
+}
+
+
+ISR(TIMER2_COMP_vect){  //When comparator is triggered clear low ports (off part of PWM cycle)
+    if (OCR2 <255){
+        if (state != brake){
+            //Clear High
+    	    HIGH_PORT_A |= (1 << HIGH_A);
+            HIGH_PORT_B |= (1 << HIGH_B);
+        	HIGH_PORT_C |= (1 << HIGH_C);
+    	    
+        }
+    }
+}
+
+ISR(TIMER2_OVF_vect ){ //When timer overflows enable low port for current state
+    if (OCR2 > 0){
+       if (state == forward){
+	        HIGH_PORT_A &= ~(1<< HIGH_A); //Enable one motor
+            HIGH_PORT_C &= ~(1 << HIGH_C); //Enable 2nd motor
+       } else if (state == backward){
+
+       } else if (state == brake){
+    	   LOW_PORT_A |= (1 << LOW_A);
+    	   LOW_PORT_B |= (1 << LOW_B);
+    	   LOW_PORT_C |= (1 << LOW_C);
+       }
+   }
+
+   if (OCR2 > 250 && state != brake){
+        lets_get_high++;
+        if (lets_get_high > 50){
+            //Clear High
+    	    HIGH_PORT_A |= (1 << HIGH_A);
+            HIGH_PORT_B |= (1 << HIGH_B);
+        	HIGH_PORT_C |= (1 << HIGH_C);
+            lets_get_high = 0;
+        }
+   }
+}
